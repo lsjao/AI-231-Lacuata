@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# Datasets (MNIST is auto-downloaded by torchvision; don't commit ~50MB of idx files)
+data/
+*.idx1-ubyte
+*.idx3-ubyte
+
+# OS
+Thumbs.db
+.DS_Store

@@ -1,0 +1,9 @@
+# Pinned to the versions this exercise was actually developed and run against.
+# CPU-only torch is sufficient — the whole 5-epoch run takes a few minutes.
+torch==2.13.0
+torchvision==0.28.0
+einops==0.8.2
+matplotlib==3.10.6
+
+# Needed only to execute/inspect the notebook:
+jupyter
