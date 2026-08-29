@@ -1,11 +1,12 @@
-# ME1 — A 3-Layer CNN for MNIST Built from `einops` + `torch.einsum`
+# ME1: A 3-Layer CNN for MNIST Built from `einops` and `torch.einsum`
 
 **Course:** AI 231 · **Author:** Lacuata
 
-A convolutional network for MNIST digit classification in which **every layer is
-hand-implemented** with `einops` (`rearrange`, `reduce`) and `torch.einsum`. No
-`nn.Conv2d`, `nn.Linear`, `nn.MaxPool2d`, `nn.BatchNorm2d`, `F.conv2d`, `F.max_pool2d`,
-`F.linear`, or `F.unfold` appears anywhere in the forward path.
+This exercise builds a convolutional network for MNIST digit classification in which every
+layer is hand-implemented with `einops` (`rearrange`, `reduce`) and `torch.einsum`. Nothing
+in the forward path calls `nn.Conv2d`, `nn.Linear`, `nn.MaxPool2d`, `nn.BatchNorm2d`,
+`F.conv2d`, `F.max_pool2d`, `F.linear`, or `F.unfold`. The whole network is assembled from
+index notation, then trained and evaluated the way any other model would be.
 
 > ### Final test accuracy: **97.51%** (9,751 / 10,000)
 > 5 epochs on CPU · 6,218 trainable parameters · 432 s training time
@@ -16,71 +17,80 @@ hand-implemented** with `einops` (`rearrange`, `reduce`) and `torch.einsum`. No
 
 | File | What it is |
 |---|---|
-| `me1_einops_cnn.ipynb` | **The deliverable.** Executed end to end with outputs intact: layer derivations, model definition, correctness verification, learning-rate sweep, 5-epoch training, final test accuracy, per-class breakdown, and the 4×4 prediction grid. |
-| `einops_cnn.py` | The same layers and model as an importable module, for reuse and testing. |
-| `test_correctness.py` | Verifies the einsum layers against `F.conv2d` / `F.max_pool2d` as a reference oracle. |
-| `requirements.txt` | Pinned versions this was developed and run against. |
+| `me1_einops_cnn.ipynb` | **The deliverable.** Executed end to end with outputs intact, covering the layer derivations, the model definition, correctness verification, the learning-rate sweep, 5 epochs of training, final test accuracy, the per-class breakdown, and the 4×4 prediction grid. |
+| `einops_cnn.py` | The same layers and model packaged as an importable module, so they can be reused and tested outside the notebook. |
+| `test_correctness.py` | Checks the einsum layers against `F.conv2d` and `F.max_pool2d`, which serve as a reference oracle. |
+| `figures/` | The plots produced by the notebook, saved out so this README can show them. |
+| `requirements.txt` | The versions this was developed and run against, pinned. |
 
 ---
 
-## What is and isn't used
+## What the model uses, and what it avoids
 
-| Not used anywhere in the forward math | Used, and why that's consistent with the brief |
+The brief rules out the built-in layers, so the table below draws the line precisely and
+explains why the surviving imports belong on the permitted side of it.
+
+| Absent from the forward math | Present, and consistent with the brief |
 |---|---|
-| `nn.Conv2d`, `nn.Linear`, `nn.MaxPool2d`, `nn.BatchNorm2d` | `nn.Parameter` — a weight *container*, not a layer |
-| `F.conv2d`, `F.max_pool2d`, `F.linear`, `F.unfold` | `nn.Module` — a parameter *registry*, so `torch.optim` can find the weights |
-| any built-in convolution routine | `torch.optim`, autograd — optimisation, not layer implementation |
-| | `F.relu`, `F.cross_entropy` — activation and loss, explicitly permitted |
+| `nn.Conv2d`, `nn.Linear`, `nn.MaxPool2d`, `nn.BatchNorm2d` | `nn.Parameter`, a weight *container* rather than a layer |
+| `F.conv2d`, `F.max_pool2d`, `F.linear`, `F.unfold` | `nn.Module`, a parameter *registry* that lets `torch.optim` find the weights |
+| any built-in convolution routine | `torch.optim` and autograd, which handle optimisation rather than layer implementation |
+| | `F.relu` and `F.cross_entropy`, the activation and loss, both explicitly permitted |
 
-`F.conv2d` and `F.max_pool2d` appear **only** inside verification code (notebook §2.1 and
-`test_correctness.py`), used as a reference oracle to prove the einsum implementation
-computes the identical function. They are never part of the model.
+`F.conv2d` and `F.max_pool2d` do appear in the repository, though only inside verification
+code (notebook §2.1 and `test_correctness.py`), where they act as a reference oracle proving
+that the einsum implementation computes an identical function. They never touch the model.
 
 ---
 
 ## How each layer is implemented
 
-### Convolution — one `einsum`
+### Convolution, expressed as one `einsum`
 
-A convolution output is
+A convolution output is defined by
 
 ```
 y[b,o,h,w] = Σ_i Σ_p Σ_q  x[b, i, h+p, w+q] · W[o,i,p,q]  +  β[o]
 ```
 
-a sum of products over three indices `(i, p, q)` — exactly what `einsum` expresses. The one
-obstacle is that `x` is indexed at *shifted* positions `h+p, w+q`, which `einsum` cannot do
-itself. So the sliding window is materialised first (`extract_patches`, the classic
-**im2col** trick), giving `patches[b,i,h,w,p,q] = x[b,i,h+p,w+q]`, after which the whole
-convolution is a single line:
+which is a sum of products over three indices `(i, p, q)`, precisely the shape of
+computation that `einsum` exists to express. The one obstacle is that `x` is read at the
+shifted positions `h+p, w+q`, and `einsum` has no way to offset an index by itself.
+Materialising the sliding window ahead of time clears that obstacle, which is what
+`extract_patches` does through the classic **im2col** trick, producing
+`patches[b,i,h,w,p,q] = x[b,i,h+p,w+q]`. From there the entire convolution collapses into a
+single line.
 
 ```python
 torch.einsum('bihwpq,oipq->bohw', patches, weight)
 ```
 
-`i`, `p`, `q` are absent from the right-hand side, so einsum sums over them: the input
-channel and both kernel axes. `b`, `o`, `h`, `w` survive.
+Because `i`, `p`, and `q` never appear to the right of the arrow, einsum sums over them,
+folding away the input channel and both kernel axes while `b`, `o`, `h`, and `w` survive
+into the output.
 
-Patch extraction uses `Tensor.unfold`, a pure **stride/view** operation — it reindexes
-existing memory and performs no arithmetic, so no built-in convolution is smuggled in.
-Zero-padding is done manually by allocating a larger zero buffer and copying the image into
-the middle of it.
+Patch extraction leans on `Tensor.unfold`, a pure stride and view operation that reindexes
+memory already allocated and performs no arithmetic of its own, so no built-in convolution
+slips in through the back door. Zero-padding is likewise done by hand, by allocating a
+larger buffer of zeros and copying the image into the middle of it.
 
-### Pooling — `einops.reduce`
+### Pooling, stated directly with `einops.reduce`
+
+Pooling needs no einsum at all, since `reduce` says the thing outright.
 
 ```python
 reduce(x, 'b c (h ph) (w pw) -> b c h w', 'max', ph=2, pw=2)   # 2x2 max-pool
 reduce(x, 'b c h w -> b c', 'mean')                            # global average pool
 ```
 
-The pattern factorises each spatial axis into (block index, position-within-block) and
-reduces the within-block axes away — which *is* the definition of pooling, stated
-declaratively rather than invoked as a module.
+Each pattern factorises a spatial axis into a block index and a position within that block,
+then reduces the within-block axes away. That factorisation is the definition of pooling,
+written declaratively instead of invoked as a module.
 
-### Fully-connected head — `einsum`
+### The fully-connected head, a contraction over features
 
 ```python
-torch.einsum('bf,fo->bo', x, weight) + bias    # contract the feature axis
+torch.einsum('bf,fo->bo', x, weight) + bias
 ```
 
 ---
@@ -98,33 +108,34 @@ global average pool                    (b, 32)
 linear head 32 -> 10                   (b, 10)   <- raw logits
 ```
 
-**6,218 trainable parameters** (conv1 80, conv2 1,168, conv3 4,640, head 330).
+That comes to **6,218 trainable parameters**, split as conv1 80, conv2 1,168, conv3 4,640,
+and head 330. Each choice behind the diagram is worth spelling out.
 
-Why this design:
+- **3×3 kernels, stride 1, padding 1.** Padding of 1 keeps every convolution
+  shape-preserving, which confines all downsampling to the pooling layers and keeps the
+  shape trace trivial to follow. A 3×3 window is the smallest that can still represent
+  orientation and edges, and stacking three of them yields a 7×7 effective receptive field
+  that covers essentially the whole digit once the two pools have run.
+- **Channel widths 8 → 16 → 32.** This follows the standard schedule of halving the
+  resolution while doubling the channels, since each 2×2 pool discards four times the
+  spatial information and the extra channels keep the representation from collapsing.
+  Starting at 8 holds the model near 6k parameters, which matters a great deal when
+  training happens on CPU.
+- **Pooling after conv1 and conv2, but not conv3.** Two pools take 28 → 14 → 7, and a third
+  would leave a 3×3 map that global average pooling makes redundant anyway.
+- **Global average pooling in place of flattening.** Flattening 32×7×7 = 1,568 features
+  would demand a **15,690**-parameter head, roughly 70% of the entire model and the first
+  thing that would overfit. Global average pooling brings that down to **330** parameters
+  and pushes conv3's 32 channels to become class-relevant features in their own right. Of
+  every decision here, this one shapes the model most.
+- **Logits rather than probabilities on the output.** `F.cross_entropy` applies log-softmax
+  internally, so adding a softmax of our own would be numerically worse and mathematically
+  wrong.
 
-- **3×3 kernels, stride 1, padding 1.** Padding 1 makes each conv shape-preserving, so all
-  downsampling happens in the pooling layers alone and the shape trace stays trivial to
-  reason about. 3×3 is the smallest kernel that can still represent orientation and edges;
-  three stacked 3×3 convs give a 7×7 effective receptive field, which after the two pools
-  covers essentially the whole digit.
-- **Channel widths 8 → 16 → 32.** The standard "halve the resolution, double the channels"
-  schedule — each 2×2 pool discards 4× the spatial information, so doubling channels keeps
-  the representation from collapsing. Starting at 8 keeps the model ~6k parameters, which
-  matters because this trains on CPU.
-- **Pool after conv1 and conv2 but not conv3.** Two pools take 28 → 14 → 7. A third would
-  leave a 3×3 map that global average pooling then makes redundant anyway.
-- **Global average pooling instead of flattening.** Flattening 32×7×7 = 1,568 features
-  would need a **15,690**-parameter head — 70% of the entire model and the main thing that
-  would overfit. GAP gives a **330**-parameter head and forces conv3's 32 channels to
-  become class-relevant features themselves. This is the single biggest architectural
-  decision here.
-- **Outputs are logits, not probabilities.** `F.cross_entropy` applies log-softmax
-  internally; adding a softmax would be numerically worse and mathematically wrong.
-
-**Initialisation.** He/Kaiming-normal (`std = sqrt(2/fan_in)`) for the convs, because each
-is followed by a ReLU and the factor of 2 compensates for ReLU zeroing half the
-activations. Xavier/Glorot-uniform for the head, because it feeds a softmax rather than a
-ReLU and so wants unit gain.
+Initialisation follows the activation that comes after each layer. The convolutions use
+He/Kaiming-normal (`std = sqrt(2/fan_in)`), where the factor of 2 compensates for the ReLU
+zeroing half the activations. The head uses Xavier/Glorot-uniform instead, because it feeds
+a softmax rather than a ReLU and therefore wants unit gain.
 
 ---
 
@@ -132,47 +143,48 @@ ReLU and so wants unit gain.
 
 | Hyperparameter | Value | Justification |
 |---|---|---|
-| Batch size | **128** | Benchmarked on the actual machine: 64 → 1,908 img/s, **128 → 2,231 img/s**, 256 → 1,076 img/s. 128 is the throughput optimum; larger batches push the im2col patch tensor out of cache. |
-| Optimizer | **Adam** | Per-parameter adaptive step sizes remove the need for a hand-tuned LR schedule within a fixed 5-epoch budget. |
-| Learning rate | **1e-2** | Selected by a sweep over {1e-3, 3e-3, 1e-2} on a held-out 5k validation split (88.84% / 93.14% / **95.58%** after 1 epoch). **See the caveat below — this is the least rigorous choice in the project.** |
-| Weight decay | **0** | ~6k parameters against 60k images is capacity-limited, not overfitting; regularisation would only slow fitting. Confirmed by the +0.41% train/test gap. |
+| Batch size | **128** | Benchmarked on the actual machine, where 64 gave 1,908 img/s, **128 gave 2,231 img/s**, and 256 fell to 1,076 img/s. 128 is the throughput optimum, since larger batches push the im2col patch tensor out of cache. |
+| Optimizer | **Adam** | Per-parameter adaptive step sizes remove the need for a hand-tuned LR schedule inside a fixed 5-epoch budget. |
+| Learning rate | **1e-2** | Selected by a sweep over {1e-3, 3e-3, 1e-2} on a held-out 5k validation split, scoring 88.84%, 93.14%, and **95.58%** after one epoch. **This is the least rigorous choice in the project, and the caveat below explains why.** |
+| Weight decay | **0** | Roughly 6k parameters against 60k images leaves the model capacity-limited rather than prone to overfitting, so regularisation would only slow fitting. The +0.41% train/test gap confirms it. |
 | Epochs | **5** | Fixed by the exercise specification. |
-| Loss | **Cross-entropy** | Standard for single-label multi-class classification; consumes raw logits. |
-| Normalisation | **mean 0.1307, std 0.3081** | MNIST's conventional dataset-wide statistics. Zero-centred unit-variance inputs are what the He initialisation assumes, so the two choices go together. |
-| Augmentation | **none** | The model is capacity-limited, not data-limited; augmentation would slow convergence inside 5 epochs without addressing an overfitting problem that doesn't exist here. |
+| Loss | **Cross-entropy** | Standard for single-label multi-class classification, and it consumes raw logits. |
+| Normalisation | **mean 0.1307, std 0.3081** | MNIST's conventional dataset-wide statistics. Zero-centred unit-variance inputs are exactly what the He initialisation assumes, so the two choices go together. |
+| Augmentation | **none** | The model is capacity-limited rather than data-limited, so augmentation would slow convergence inside 5 epochs while addressing an overfitting problem that does not exist here. |
 | Seed | **0** | Set once at the top of the notebook. |
 
-**The test split is never used for any decision.** Learning-rate selection uses a
-validation split held out of the training data; test accuracy is printed per epoch for
-visibility only, and is the final reported number.
+No decision anywhere in the project consults the test split. Learning-rate selection runs on
+a validation split held out of the training data, and test accuracy is printed each epoch
+purely for visibility before being reported as the final number.
 
 ### ⚠️ Caveat: the learning-rate sweep is the weakest part of this project
 
-Stated openly rather than papered over, because it is the first thing a careful reader
-should question:
+Stating this openly seems better than papering over it, since it is the first thing a
+careful reader should question. Two problems compound each other.
 
-1. **The winner sits on the edge of the grid.** The sweep selected `1e-2`, the largest value
-   tried. When the best value is an endpoint, the honest reading is that the grid was too
-   narrow — the true optimum may lie outside it. A sound sweep is widened until the winner
-   is *interior* to the range.
+1. **The winner sits on the edge of the grid.** The sweep chose `1e-2`, the largest value
+   tried, and when the best value lands on an endpoint the honest reading is that the grid
+   was drawn too narrowly, leaving the true optimum possibly outside it. A sound sweep keeps
+   widening until the winner sits *interior* to the range.
 2. **A 1-epoch proxy structurally favours large learning rates.** A large step size makes
-   rapid early progress, which is exactly what a 1-epoch score rewards, but it is also more
-   likely to become unstable later. Selecting under a budget different from the one actually
-   deployed means selecting for the wrong thing.
+   rapid early progress, which is exactly what a one-epoch score rewards, while carrying a
+   higher risk of instability later on. Selecting under a budget that differs from the one
+   actually deployed means selecting for the wrong thing.
 
-**The effect is visible in the results, not hypothetical.** Test accuracy peaks at **97.63%
-in epoch 2** and then oscillates down to **97.51%** by epoch 5 instead of converging
-cleanly — the signature of a step size slightly too large for the later part of training.
+The results show the consequence directly. Test accuracy peaks at **97.63% in epoch 2**,
+then oscillates down to **97.51%** by epoch 5 instead of converging cleanly, which is the
+signature of a step size slightly too large for the later part of training.
 
-**The correct fix**, not run here purely on compute budget (~30 min vs ~1 min): widen the
-grid (e.g. add `3e-2`) and give each candidate the full 5-epoch budget, selecting on
-final-epoch validation accuracy and confirming the winner is not on a boundary.
+The fix would be to widen the grid (adding `3e-2`, for instance), give each candidate the
+full 5-epoch budget, select on final-epoch validation accuracy, and confirm the winner sits
+away from the boundary. Compute budget alone kept it out of this run, at roughly 30 minutes
+against the 1 minute the shortcut cost.
 
-**Why it still ships.** The exercise's objective is the einsum/einops implementation, and
-97.51% is a genuine held-out number from a fully specified, seeded, reproducible procedure.
-The learning rate is simply not tuned as tightly as it could be — likely costing a few
-tenths of a percent. It should be described as *reasonable and evidence-informed*, not as
-*tuned*.
+The result still stands on its own terms. The objective of the exercise is the einsum and
+einops implementation, and 97.51% is a genuine held-out number produced by a fully
+specified, seeded, reproducible procedure. The learning rate is best described as reasonable
+and evidence-informed rather than tuned, and tightening it would likely buy back a few
+tenths of a percent.
 
 ---
 
@@ -187,7 +199,7 @@ tenths of a percent. It should be described as *reasonable and evidence-informed
 | Trainable parameters | 6,218 |
 | Training time (5 epochs, 6 CPU threads) | 432.3 s |
 
-Per epoch:
+Epoch by epoch, the run went as follows.
 
 | Epoch | Train loss | Train acc | Test loss | Test acc | Time |
 |---:|---:|---:|---:|---:|---:|
@@ -197,13 +209,30 @@ Per epoch:
 | 4 | 0.0794 | 97.53% | 0.0986 | 97.04% | 93.9 s |
 | 5 | 0.0678 | 97.92% | 0.0772 | 97.51% | 100.6 s |
 
-Per-class test accuracy — weakest digit is **3 (93.17%)**, strongest is **4 (99.59%)**:
+![Training and test learning curves across 5 epochs](figures/learning_curves.png)
+
+The curves tell that same story visually, with loss on the left, accuracy on the right, and
+train plotted against test in both. Almost all of the learning happens by epoch 2, after
+which the pairs of curves flatten and stay close together, which is the picture of a
+capacity-limited model rather than an overfitting one. The shallow dip in test accuracy at
+epoch 4 is the oscillation described in the caveat above.
+
+Broken down by digit, the weakest class is **3 at 93.17%** and the strongest is **4 at
+99.59%**.
 
 | digit | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 |
 |---|---|---|---|---|---|---|---|---|---|---|
 | acc | 96.43% | 99.03% | 99.03% | **93.17%** | 99.59% | 98.99% | 97.91% | 96.50% | 97.23% | 97.22% |
 
-Verification of the hand-rolled layers against the torch reference implementations:
+![Sixteen randomly drawn MNIST test predictions, all correct](figures/sample_predictions.png)
+
+A seeded random draw of sixteen test images gives a qualitative check to set beside the
+aggregate numbers, each panel showing the true label, the prediction, and the model's
+confidence. All sixteen come out correct with confidences clustered at 99% and above, which
+is roughly what a 97.51% classifier should produce on a sample this small.
+
+The layers themselves were verified against torch's reference implementations before any of
+this training took place.
 
 ```
 einsum conv (k=3,s=1,p=1) vs F.conv2d      max abs err = 7.15e-07
@@ -214,9 +243,10 @@ einops global avgpool     vs x.mean(2,3)   max abs err = 0.00e+00
 gradients reached all 8 parameter tensors, all finite
 ```
 
-Agreement at float32 precision means the einsum implementation is *correct*, not merely
-plausible — "we didn't use `nn.Conv2d`" is a statement about the implementation, not a
-disclaimer about the results.
+Agreement at float32 precision establishes that the einsum implementation computes the same
+function as the library routine. Saying that `nn.Conv2d` never appears here therefore
+describes how the model was built, while the correctness of its results rests on firm
+ground.
 
 ---
 
@@ -233,29 +263,32 @@ jupyter nbconvert --to notebook --execute --inplace me1_einops_cnn.ipynb
 # ...or just open me1_einops_cnn.ipynb and Run All.
 ```
 
-Everything is seeded (`SEED = 0`), so a re-run reproduces the numbers above. MNIST is
-downloaded automatically by `torchvision` into `data/` on first run; that directory is
+Everything is seeded through `SEED = 0`, so a re-run reproduces the numbers above.
+`torchvision` downloads MNIST automatically into `data/` on first run, and that directory is
 gitignored rather than committed.
 
 ---
 
 ## Discussion
 
-**What the exercise demonstrates.** Convolution, pooling, and matrix multiplication are not
-three different mechanisms — they are all *contractions over chosen axes*. `einsum` lets
-each be written as one line that names exactly which axes are summed and which survive. The
-`torch.nn` layers are performance wrappers around that idea, not the idea itself.
+**What the exercise demonstrates.** Convolution, pooling, and matrix multiplication all turn
+out to be one operation wearing three different costumes, a contraction over chosen axes.
+Writing them with `einsum` and `einops.reduce` makes that shared structure explicit, since
+each becomes a single line naming which axes get summed and which survive. The `torch.nn`
+layers are performance wrappers built around the same idea.
 
 **The cost of doing it longhand.** `extract_patches` materialises a `(b, c, h, w, k, k)`
-tensor — 9× the input feature map for a 3×3 kernel. `nn.Conv2d` avoids that blow-up by
-dispatching to fused kernels that never build the patch tensor explicitly. That memory
-traffic is the real price of the explicit version, and it is why the batch-size benchmark
-falls off a cliff at 256: the patch tensor stops fitting in cache.
+tensor, nine times the size of the input feature map for a 3×3 kernel. `nn.Conv2d` sidesteps
+that blow-up by dispatching to fused kernels that never build the patch tensor explicitly,
+so memory traffic is the real price of the explicit version. It also explains why the
+batch-size benchmark falls off a cliff at 256, the point where the patch tensor stops
+fitting in cache.
 
-**Where the remaining error is.** With a 32-dimensional globally-pooled representation
-feeding a 330-parameter head, the model has little capacity to separate visually similar
-digits. Digit 3 (93.17%) is the clear outlier — every other class is above 96% — though
-identifying *which* digits it is being confused with would need a confusion matrix, which
-this notebook does not compute. The most effective next step would be widening the channels
-or replacing GAP with a small hidden layer, **not** training longer: the learning curves are
-already flat by epoch 5, and the model is capacity-limited rather than underfit.
+**Where the remaining error lives.** With a 32-dimensional globally-pooled representation
+feeding a 330-parameter head, the model has little capacity left for separating visually
+similar digits. Digit 3 stands out at 93.17% while every other class clears 96%, though
+naming the digits it gets confused with would require a confusion matrix that this notebook
+does not compute. Widening the channels or replacing global average pooling with a small
+hidden layer is the most promising next step, whereas training longer would achieve little,
+since the learning curves are flat by epoch 5 and the model is capacity-limited rather than
+underfit.
