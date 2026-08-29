@@ -20,6 +20,7 @@ index notation, then trained and evaluated the way any other model would be.
 | `me1_einops_cnn.ipynb` | **The deliverable.** Executed end to end with outputs intact, covering the layer derivations, the model definition, correctness verification, the learning-rate sweep, 5 epochs of training, final test accuracy, the per-class breakdown, and the 4×4 prediction grid. |
 | `einops_cnn.py` | The same layers and model packaged as an importable module, so they can be reused and tested outside the notebook. |
 | `test_correctness.py` | Checks the einsum layers against `F.conv2d` and `F.max_pool2d`, which serve as a reference oracle. |
+| `extract_figures.py` | Pulls the notebook's plots out into `figures/`, and under `--check` reports when they have drifted out of step with the notebook. |
 | `figures/` | The plots produced by the notebook, saved out so this README can show them. |
 | `requirements.txt` | The versions this was developed and run against, pinned. |
 
@@ -261,11 +262,21 @@ python test_correctness.py
 # Run the full exercise (downloads MNIST on first run, ~9 min on CPU):
 jupyter nbconvert --to notebook --execute --inplace me1_einops_cnn.ipynb
 # ...or just open me1_einops_cnn.ipynb and Run All.
+
+# Refresh the figures the READMEs embed, after any re-run:
+python extract_figures.py
 ```
 
 Everything is seeded through `SEED = 0`, so a re-run reproduces the numbers above.
 `torchvision` downloads MNIST automatically into `data/` on first run, and that directory is
 gitignored rather than committed.
+
+Because the plots exist both as notebook outputs and as files under `figures/`, a re-run
+leaves the committed copies stale until `extract_figures.py` refreshes them. Each figure is
+named by a `figure:<name>` tag on the cell that draws it, so the filenames the READMEs link
+to survive any reordering or editing of cells. Running `python extract_figures.py --check`
+reports missing, stale, or orphaned figures and exits non-zero, which makes the drift easy
+to catch before committing.
 
 ---
 
